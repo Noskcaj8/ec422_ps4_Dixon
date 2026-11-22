@@ -150,13 +150,13 @@ fm <- fm[, colSums(is.na(fm)) == 0]
 
 tcode[c("INDPRO", "PAYEMS", "CPIAUCSL", "FEDFUNDS")]
 ```
-Write up
+Industrial production and Payroll employment both use code 5, meaning they're transformed as monthly growth rates. The CPI price index uses code 6, the change in the growth rate, a second difference of the log, capturing whether inflation itself is accelerating or decelerating rather than just the inflation rate. The federal funds rate uses code 2, a simple first difference with no logging at all. The difference between FEDFUNDS and INDPRO makes sense given what each series looks like. Industrial production trends upward over time with multiplicative growth, so logging and differencing converts it into a stationary growth rate, much like liquor sales. The federal funds rate is already a rate (shown in percentage points) that doesn't have a long-run exponential trend so a plain first difference is enough to make it stationary without needing to log it first.
 ```{r}
 Z <- fm |> select(-date) |> as.matrix()
 pc <- prcomp(scale(Z))
 summary(pc)$importance[, 1:5]
 ```
-write up
+The first three components together explain about 29.5% of the total variation across the 121 FRED-MD series, with the individual factors contributing about 15.0%, 7.4%, and 7.1% respectively. This matches the idea that a small number of common factors can summarize meaningful co-movement across a large dataset, even though the bulk of variation in any individual series remains unique.
 ```{r}
 F1 <- pc$x[, 1] * sign(cor(pc$x[, 1], fm$INDPRO))
 tibble(date = fm$date, F1 = F1) |> ggplot(aes(date, F1)) + geom_line() +
@@ -165,7 +165,11 @@ tibble(date = fm$date, F1 = F1) |> ggplot(aes(date, F1)) + geom_line() +
 sort(abs(cor(pc$x[, 1], Z))[1, ], decreasing = TRUE)[1:8]
 sort(abs(cor(pc$x[, 2], Z))[1, ], decreasing = TRUE)[1:8]
 ```
-write up
+The first factor tracks the U.S. business cycle closely. It sits at high, volatile levels through the 1960s–70s, falls during recession periods, and shows a sustained, deep collapse consistent with the 2008–09 financial crisis, before recovering into a calmer, more stable pattern in the recent years. The overall shape looks like it spends most of its time fluctuating mildly around zero during expansions and drops sharply and briefly during recessions.
+
+The series most correlated with the first factor are measures of real economic activity: payroll employment (PAYEMS), manufacturing industrial production (IPMANSICS), goods-producing employment (USGOOD), total industrial production (INDPRO), manufacturing employment (MANEMP), production of final products (IPFPNSS), manufacturing capacity utilization (CUMFNS), and durable goods manufacturing employment (DMANEMP) — all with correlations above 0.77. This confirms the first factor is a broad "real economic activity" factor, summarizing co-movement across production and labor market series, which is why it tracks recessions and expansions so closely.
+
+However, the second factor is dominated by price indices: CPI excluding food/energy components, CPI for commodities and transportation, the overall CPI (CPIAUCSL), the PCE price index (PCEPI), and related cost-of-living measures, all correlated around 0.66–0.75. This factor is best described as an "inflation" factor — different from the first factor's real-activity signal.
 ```{r}
 ip <- fm$INDPRO; n <- nrow(Z); init <- which(fm$date == as.Date("1989-12-01"))
 e_ar <- NULL; e_fa <- NULL
@@ -178,7 +182,9 @@ for (T in init:(n - 1)) {
 }
 c(RMSE_AR = sqrt(mean(e_ar^2)), RMSE_FA = sqrt(mean(e_fa^2)))
 ```
-write up
+Replicating the class horse race gives RMSE_AR = 0.617 and RMSE_FA = 0.589. Adding the three factors to the AR(1) reduces RMSE by about 4.5%, confirming that real-time information from a broad cross-section of macro series improves one-month-ahead forecasts of industrial production growth farther than its own lag alone captures.
+
+It would be cheating to estimate the factors once using the full sample and use those in the horse race because doing so would let the model "see into the future" at every forecast origin. The whole point of factor estimation is to summarize only the information available to a forecaster standing at time T, but full-sample factors are constructed using data all the way through 2019, including months that hadn't happened yet at earlier forecast origins like 1990 or 1995. That would give the factor-augmented model an unfair informational advantage it wouldn't have in real time, making its forecast accuracy look better than it could actually perform in practice.
 ```{r}
 direct_race <- function(series, h = 12, r = 3) {
   lv <- md |> mutate(log_x = log(.data[[series]]), g = 100 * (log_x - lag(log_x))) |>
@@ -200,7 +206,9 @@ direct_race <- function(series, h = 12, r = 3) {
 
 direct_race("CPIAUCSL")
 ```
-write up
+Adding the three factors improves the 12-month-ahead forecast of CPI inflation, reducing RMSE from 2.108 (AR-only) to 1.894 (factor-augmented) with a similar improvement in MAE (1.578 to 1.349). The DM test, adjusted for the autocorrelation induced by overlapping 12-month forecast errors, gives a p-value of 0.00044, strongly rejecting equal accuracy. So the factors don't just produce a marginally better point forecast, the improvement is statistically significant even after properly accounting for the overlapping-forecast-error problem.
 
-##Reflection 
 
+## Reflection 
+
+Across these horse races, a clear theme was shown. Simple models are hard to beat when there's little data to estimate a more complex model's extra parameters, but new information — not just more complexity — can produce improvements. The ARIMA model beat ETS and the seasonal naive benchmark not because it was more flexible, but because it captured the right structure. Similarly, VAR(1) beat VAR(4) because VAR(4) had too many parameters to estimate reliably from a short sample. I saw the same underlying idea that reducing estimation noise, show up in three different disguises. The BVAR's Minnesota prior shrinks coefficients toward a simple benchmark, the equal-weight forecast combination shrinks toward an average of two models rather than betting everything on one, and the factor model compresses 121 noisy series into common components before using them. In each case, the goal is to extract real signal while discarding estimation noise, rather than fitting every available parameter or variable. The one case where combining or shrinking didn't clearly help was the forecast combination in Part 3, because ARIMA and ETS's errors were too highly correlated (0.88) for averaging to cancel out much noise. This is a reminder that these techniques work by exploiting independent sources of error, not just by combining more things.
